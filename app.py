@@ -502,6 +502,13 @@ class App(tk.Tk):
                 except Exception as exc:
                     failed += 1
                     self._log(f"Failed {source.name}: {exc}")
+                    protected_excel = source.suffix.lower() in {".xlsx", ".xls"} and "not a zip file" in str(exc).lower()
+                    if protected_excel:
+                        self._log(
+                            "This PC returned Excel bytes that are not a ZIP package. "
+                            "Document-protection software can do that for unrecognized programs. "
+                            "Allow MarkItDown.exe in that software, then convert again."
+                        )
                     continue
                 ok += 1
                 self._last_output = written
@@ -545,54 +552,10 @@ class App(tk.Tk):
         else:
             self._log(f"Output folder: {folder}")
 
-def _xlsx_runtime_diag(source: Path) -> str:
-    """Temporary notes for a frozen-build Excel failure. Removed after diagnosis."""
-    import hashlib
-    import os
-    import zipfile
-
-    lines: list[str] = [f"path={source}", f"zipfile={zipfile.__file__}"]
-    fd = os.open(str(source), os.O_RDONLY | os.O_BINARY)
-    try:
-        chunk = os.read(fd, 16)
-    finally:
-        os.close(fd)
-    lines.append(f"os.read={chunk!r}")
-    raw = source.read_bytes()
-    lines.append(
-        f"size={len(raw)} sha256={hashlib.sha256(raw).hexdigest()} head={raw[:8]!r}"
-    )
-    docx = source.with_name("letter.docx")
-    if docx.is_file():
-        try:
-            with zipfile.ZipFile(docx) as archive:
-                lines.append("zipfile-docx ok " + ",".join(archive.namelist()[:2]))
-        except Exception as exc:
-            lines.append(f"zipfile-docx {type(exc).__name__}: {exc}")
-    try:
-        with source.open("rb") as handle:
-            handle.seek(0, 2)
-            size = handle.tell()
-            handle.seek(-22, 2)
-            tail = handle.read(22)
-        lines.append(f"seek size={size} tail={tail!r}")
-    except Exception as exc:
-        lines.append(f"seek {type(exc).__name__}: {exc}")
-    try:
-        with zipfile.ZipFile(source) as archive:
-            lines.append("zipfile-path ok " + ",".join(archive.namelist()[:4]))
-    except Exception as exc:
-        lines.append(f"zipfile-path {type(exc).__name__}: {exc}")
-    return "\n".join(lines)
-
 
 def cli_convert(source: Path, destination: Path) -> int:
     """Convert one file without opening the window. Used to check a built executable."""
     try:
-        if source.suffix.lower() == ".xlsx":
-            destination.with_name(destination.name + ".diag.txt").write_text(
-                _xlsx_runtime_diag(source), encoding="utf-8"
-            )
         convert_file(source, destination)
     except Exception:
         error_path = destination.with_name(destination.name + ".error.txt")

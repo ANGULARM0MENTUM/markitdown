@@ -15,6 +15,8 @@ Supported picks include `.pdf`, `.docx`, `.xlsx`, `.xls`, `.pptx`, `.html`, `.ht
 
 Image files produce metadata when [ExifTool](https://exiftool.org/) is on `PATH`. Audio files other than WAV need [ffmpeg](https://ffmpeg.org/) on `PATH` for transcription. Those tools are separate programs and are not inside the `.exe`.
 
+If an Excel file fails in the `.exe` with “File is not a zip file” and the same file converts from the `venv` Python, document-protection software is handing `MarkItDown.exe` a transformed copy of the workbook. Word, PowerPoint, PDF, and HTML are unaffected. Allow `MarkItDown.exe` in that product and convert again.
+
 A single file can also be converted from a terminal without opening the window:
 
 ```bat

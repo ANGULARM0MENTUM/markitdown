@@ -1,0 +1,17 @@
+Traceback (most recent call last):
+  File "app.py", line 586, in cli_convert
+    convert_file(source, destination)
+  File "app.py", line 102, in convert_file
+    result = get_converter().convert(str(source))
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "markitdown\_markitdown.py", line 349, in convert
+    return self.convert_local(source, stream_info=stream_info, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "markitdown\_markitdown.py", line 403, in convert_local
+    return self._convert(file_stream=fh, stream_info_guesses=guesses, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "markitdown\_markitdown.py", line 690, in _convert
+    raise FileConversionException(attempts=failed_attempts)
+markitdown._exceptions.FileConversionException: File conversion failed after 1 attempts:
+ - XlsxConverter threw BadZipFile with message: File is not a zip file
+
