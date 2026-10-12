@@ -132,6 +132,17 @@ for dist_name in (
     except Exception as exc:
         print(f"warning: could not copy metadata for {dist_name}: {exc}")
 
+
+def _keep_data(src, dest) -> bool:
+    path = os.path.normcase(str(src))
+    if f"{os.sep}tkdnd{os.sep}" not in path:
+        return True
+    # The Windows Tcl package for this build. win-x64 also matches win-x64-tcl9.
+    return f"{os.sep}win-x64" in path
+
+
+datas = [(src, dest) for src, dest in datas if _keep_data(src, dest)]
+
 a = Analysis(
     ["app.py"],
     pathex=[],

@@ -251,8 +251,8 @@ class App(tk.Tk):
             self._log("Drag-and-drop is unavailable. Use Browse files.")
             return
         try:
-            TkinterDnD._require(self)
-        except tk.TclError as exc:
+            TkinterDnD.require(self)
+        except (tk.TclError, RuntimeError, OSError) as exc:
             self._log(f"Drag-and-drop is unavailable ({exc}). Use Browse files.")
             return
 
@@ -262,14 +262,17 @@ class App(tk.Tk):
         self._log("Drop files onto the window, or use Browse files.")
 
     def _register_drop_target(self, widget: tk.Misc, dnd_files: str) -> None:
-        def on_drop(event) -> None:
-            self.add_paths(_split_drop_paths(self, event.data))
+        def on_drop(event) -> str:
+            self.add_paths(_split_drop_paths(self, getattr(event, "data", "")))
+            return "copy"
 
         register = getattr(widget, "drop_target_register", None)
         bind = getattr(widget, "dnd_bind", None)
         if register is not None and bind is not None:
             register(dnd_files)
             bind("<<Drop>>", on_drop)
+            bind("<<DropEnter>>", lambda _event: "copy")
+            bind("<<DropPosition>>", lambda _event: "copy")
             return
 
         self.tk.call("tkdnd::drop_target", "register", widget._w, dnd_files)
@@ -279,6 +282,7 @@ class App(tk.Tk):
             event.widget = widget
             event.data = args[0] if args else ""
             on_drop(event)
+            return "copy"
 
         widget.tk.call("bind", widget._w, "<<Drop>>", widget._register(_substitute))
 
@@ -498,7 +502,6 @@ class App(tk.Tk):
                 except Exception as exc:
                     failed += 1
                     self._log(f"Failed {source.name}: {exc}")
-                    self._log(traceback.format_exc().rstrip())
                     continue
                 ok += 1
                 self._last_output = written
@@ -542,9 +545,54 @@ class App(tk.Tk):
         else:
             self._log(f"Output folder: {folder}")
 
+def _xlsx_runtime_diag(source: Path) -> str:
+    """Temporary notes for a frozen-build Excel failure. Removed after diagnosis."""
+    import hashlib
+    import os
+    import zipfile
+
+    lines: list[str] = [f"path={source}", f"zipfile={zipfile.__file__}"]
+    fd = os.open(str(source), os.O_RDONLY | os.O_BINARY)
+    try:
+        chunk = os.read(fd, 16)
+    finally:
+        os.close(fd)
+    lines.append(f"os.read={chunk!r}")
+    raw = source.read_bytes()
+    lines.append(
+        f"size={len(raw)} sha256={hashlib.sha256(raw).hexdigest()} head={raw[:8]!r}"
+    )
+    docx = source.with_name("letter.docx")
+    if docx.is_file():
+        try:
+            with zipfile.ZipFile(docx) as archive:
+                lines.append("zipfile-docx ok " + ",".join(archive.namelist()[:2]))
+        except Exception as exc:
+            lines.append(f"zipfile-docx {type(exc).__name__}: {exc}")
+    try:
+        with source.open("rb") as handle:
+            handle.seek(0, 2)
+            size = handle.tell()
+            handle.seek(-22, 2)
+            tail = handle.read(22)
+        lines.append(f"seek size={size} tail={tail!r}")
+    except Exception as exc:
+        lines.append(f"seek {type(exc).__name__}: {exc}")
+    try:
+        with zipfile.ZipFile(source) as archive:
+            lines.append("zipfile-path ok " + ",".join(archive.namelist()[:4]))
+    except Exception as exc:
+        lines.append(f"zipfile-path {type(exc).__name__}: {exc}")
+    return "\n".join(lines)
+
+
 def cli_convert(source: Path, destination: Path) -> int:
     """Convert one file without opening the window. Used to check a built executable."""
     try:
+        if source.suffix.lower() == ".xlsx":
+            destination.with_name(destination.name + ".diag.txt").write_text(
+                _xlsx_runtime_diag(source), encoding="utf-8"
+            )
         convert_file(source, destination)
     except Exception:
         error_path = destination.with_name(destination.name + ".error.txt")
