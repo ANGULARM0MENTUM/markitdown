@@ -13,7 +13,7 @@ Copy the whole `dist\MarkItDown` folder. The executable loads libraries from tha
 
 Supported picks include `.pdf`, `.docx`, `.xlsx`, `.xls`, `.pptx`, `.html`, `.htm`, `.csv`, `.txt`, `.json`, `.ipynb`, `.epub`, `.zip`, `.jpg`, `.jpeg`, `.png`, `.wav`, `.mp3`, `.msg`, and `.xml`. Other files can still be tried; MarkItDown reports an error in the log when it cannot read one.
 
-Image files produce metadata when [ExifTool](https://exiftool.org/) is on `PATH`. Audio files other than WAV need [ffmpeg](https://ffmpeg.org/) on `PATH` for transcription. Those tools are separate programs and are not inside the `.exe`.
+Image files are read with Windows OCR, which writes the recognized text. Metadata is added when [ExifTool](https://exiftool.org/) is on `PATH`. A picture caption still needs an LLM client configured in code. Audio files other than WAV need [ffmpeg](https://ffmpeg.org/) on `PATH` for transcription. ExifTool and ffmpeg are separate programs and are not inside the `.exe`.
 
 If an Excel file fails in the `.exe` with “File is not a zip file” and the same file converts from the `venv` Python, document-protection software is handing `MarkItDown.exe` a transformed copy of the workbook. Word, PowerPoint, PDF, and HTML are unaffected. Allow `MarkItDown.exe` in that product and convert again.
 

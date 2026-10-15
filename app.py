@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import subprocess
 import sys
 import threading
 import traceback
@@ -53,6 +54,98 @@ FILE_DIALOG_TYPES = [
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png"}
 AUDIO_EXTENSIONS = {".wav", ".mp3", ".m4a", ".mp4"}
 
+# Windows PowerShell 5.1 can call Windows.Media.Ocr. PowerShell 7 cannot.
+_POWERSHELL = (
+    Path(os.environ.get("SystemRoot", r"C:\Windows"))
+    / "System32"
+    / "WindowsPowerShell"
+    / "v1.0"
+    / "powershell.exe"
+)
+# `` is one backtick inside the PowerShell double-quoted generic type name.
+_OCR_SCRIPT = r"""
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+Add-Type -AssemblyName System.Runtime.WindowsRuntime
+$null = [Windows.Storage.StorageFile, Windows.Storage, ContentType = WindowsRuntime]
+$null = [Windows.Media.Ocr.OcrEngine, Windows.Foundation, ContentType = WindowsRuntime]
+$null = [Windows.Graphics.Imaging.BitmapDecoder, Windows.Graphics.Imaging, ContentType = WindowsRuntime]
+
+$asTaskGeneric = ([System.WindowsRuntimeSystemExtensions].GetMethods() | Where-Object {
+    $_.Name -eq "AsTask" -and $_.GetParameters().Count -eq 1 -and $_.GetParameters()[0].ParameterType.Name -eq "IAsyncOperation``1"
+})[0]
+
+function Await([object]$WinRtTask, [type]$ResultType) {
+    $asTask = $asTaskGeneric.MakeGenericMethod($ResultType)
+    $netTask = $asTask.Invoke($null, @($WinRtTask))
+    $netTask.Wait(-1) | Out-Null
+    $netTask.Result
+}
+
+$path = $env:MARKITDOWN_OCR_IMAGE
+$file = Await ([Windows.Storage.StorageFile]::GetFileFromPathAsync($path)) ([Windows.Storage.StorageFile])
+$stream = Await ($file.OpenAsync([Windows.Storage.FileAccessMode]::Read)) ([Windows.Storage.Streams.IRandomAccessStream])
+$decoder = Await ([Windows.Graphics.Imaging.BitmapDecoder]::CreateAsync($stream)) ([Windows.Graphics.Imaging.BitmapDecoder])
+$bitmap = Await ($decoder.GetSoftwareBitmapAsync()) ([Windows.Graphics.Imaging.SoftwareBitmap])
+$engine = [Windows.Media.Ocr.OcrEngine]::TryCreateFromUserProfileLanguages()
+if ($null -eq $engine) { throw "Windows OCR is not available for the current Windows language." }
+$result = Await ($engine.RecognizeAsync($bitmap)) ([Windows.Media.Ocr.OcrResult])
+if ($null -ne $result.Text) { [Console]::Out.Write($result.Text) }
+"""
+
+
+def _decode_process_output(data: bytes | None) -> str:
+    if not data:
+        return ""
+    if data.startswith((b"\xff\xfe", b"\xfe\xff")):
+        text = data.decode("utf-16", errors="replace")
+    elif b"\x00" in data[:100]:
+        text = data.decode("utf-16-le", errors="replace")
+    else:
+        text = data.decode("utf-8", errors="replace")
+    return text.strip()
+
+
+def recognize_image_text(source: Path) -> tuple[str, str | None]:
+    """Read text from an image with Windows OCR.
+
+    Returns the recognized text and an error message. The text is empty when
+    the image has no readable text or OCR could not run.
+    """
+    if sys.platform != "win32":
+        return "", "Windows OCR is only available on Windows."
+    if not _POWERSHELL.is_file():
+        return "", f"Windows PowerShell was not found at {_POWERSHELL}."
+    env = os.environ.copy()
+    env["MARKITDOWN_OCR_IMAGE"] = str(source)
+    try:
+        completed = subprocess.run(
+            [
+                str(_POWERSHELL),
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                "-",
+            ],
+            input=_OCR_SCRIPT.encode("utf-8"),
+            capture_output=True,
+            timeout=60,
+            env=env,
+            check=False,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+    except subprocess.TimeoutExpired:
+        return "", "Windows OCR timed out."
+    except OSError as exc:
+        return "", str(exc)
+    if completed.returncode != 0:
+        detail = _decode_process_output(completed.stderr) or _decode_process_output(completed.stdout)
+        first_line = detail.splitlines()[0] if detail else f"exit code {completed.returncode}"
+        return "", first_line
+    return _decode_process_output(completed.stdout), None
+
 _CONVERTER = None
 _CONVERTER_LOCK = threading.Lock()
 
@@ -92,15 +185,16 @@ def default_output_path(source: Path) -> Path:
     return candidate
 
 
-def convert_file(source: Path, destination: Path) -> tuple[str, Path]:
+def convert_file(source: Path, destination: Path) -> tuple[str, Path, str | None]:
     """Convert one local document and write UTF-8 Markdown.
 
-    Returns the Markdown text and the path that was written.
+    Returns the Markdown text, the path that was written, and an optional
+    status note (used for image OCR).
     """
     if not source.is_file():
         raise FileNotFoundError(f"File not found: {source}")
     result = get_converter().convert(str(source))
-    text = result.markdown or ""
+    text, note_text = _supplement_image_markdown(source, result.markdown or "")
     try:
         overwrites_source = destination.resolve() == source.resolve()
     except OSError:
@@ -109,7 +203,31 @@ def convert_file(source: Path, destination: Path) -> tuple[str, Path]:
         destination = source.with_name(f"{source.stem}.converted.md")
     destination.parent.mkdir(parents=True, exist_ok=True)
     destination.write_text(text, encoding="utf-8")
-    return text, destination
+    return text, destination, note_text
+
+
+def _supplement_image_markdown(source: Path, text: str) -> tuple[str, str | None]:
+    """Add Windows OCR text to an image conversion."""
+    if source.suffix.lower() not in IMAGE_EXTENSIONS:
+        return text, None
+    recognized, error = recognize_image_text(source)
+    if recognized:
+        if text.strip():
+            text = text.rstrip() + "\n\n" + recognized + "\n"
+        else:
+            text = recognized + "\n"
+        return text, "Read text from the image with Windows OCR."
+    if text.strip():
+        return text, None
+    if error:
+        return text, (
+            f"Windows OCR could not read this image ({error}). "
+            "Metadata needs ExifTool on PATH, and a caption needs an LLM client configured in code."
+        )
+    return text, (
+        "Windows OCR found no text in this image. "
+        "Metadata needs ExifTool on PATH, and a caption needs an LLM client configured in code."
+    )
 
 
 def _enable_dpi_awareness() -> None:
@@ -498,7 +616,7 @@ class App(tk.Tk):
                 self._set_status(f"Converting {source.name}")
                 self._log(f"Converting {source.name}")
                 try:
-                    text, written = convert_file(source, destination)
+                    text, written, note = convert_file(source, destination)
                 except Exception as exc:
                     failed += 1
                     self._log(f"Failed {source.name}: {exc}")
@@ -513,7 +631,10 @@ class App(tk.Tk):
                 ok += 1
                 self._last_output = written
                 self._log(f"Wrote {written} ({len(text)} characters)")
-                self._note_empty_result(source, text)
+                if note:
+                    self._log(note)
+                elif not text.strip():
+                    self._note_empty_result(source, text)
         finally:
             summary = f"Finished. {ok} succeeded, {failed} failed."
             self._log(summary)
@@ -524,12 +645,7 @@ class App(tk.Tk):
         if text.strip():
             return
         suffix = source.suffix.lower()
-        if suffix in IMAGE_EXTENSIONS:
-            self._log(
-                "Image Markdown is empty unless ExifTool is on PATH "
-                "(metadata) or an LLM client is configured in code (a caption)."
-            )
-        elif suffix in AUDIO_EXTENSIONS:
+        if suffix in AUDIO_EXTENSIONS:
             self._log(
                 "Audio Markdown needs SpeechRecognition, and formats other than "
                 "wav/aiff/flac also need ffmpeg on PATH."
